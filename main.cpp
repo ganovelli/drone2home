@@ -52,6 +52,9 @@ std::vector<double> image_stamps;
 // vector of image name
 std::vector<std::string> image_names;
 
+// vector of point clouds  name
+std::vector<std::string> converted_bins;
+
 struct CameraIntrinsics{
     float focal;
     int c[2];
@@ -228,7 +231,7 @@ int readBinMesh_no_T(std::string meshname){
 return 1;
 }
 
-std::vector<std::string> converted_bins;
+
 
 int readBinMeshNoSfm(std::string meshname, bool tessellate = true){
     printf("processing %s\n",meshname.c_str());
@@ -249,7 +252,7 @@ int readBinMeshNoSfm(std::string meshname, bool tessellate = true){
   //  vcg::Quaterniond imuQ = rotationFromImu(ts);
 
     fread(&tr[0],sizeof(double),3,f);
-    lidar_translation.push_back(std::make_pair(ts,tr));
+   // lidar_translation.push_back(std::make_pair(ts,tr));
 
     fread(&qr[0],sizeof(double),4,f);
     *(vcg::Point3d*)&q[1] = *(vcg::Point3d*)&qr[0];
@@ -340,6 +343,20 @@ int readBinMeshNoSfm(std::string meshname, bool tessellate = true){
 
     fclose(f);
 
+    return 1;
+}
+
+int readBinTranslation(std::string meshname){
+    int t[2]; // timestamp seconds, nanoseconds
+    vcg::Point3d tr;
+    FILE *f = fopen(meshname.c_str(),"rb");
+    if(f==0)
+        return  0 ;
+
+    fread(t,sizeof(int),2,f);
+    double ts = t[0]+0.000000001*double(t[1]);
+    fread(&tr[0],sizeof(double),3,f);
+    lidar_translation.push_back(std::make_pair(ts,tr));
     return 1;
 }
 
@@ -518,6 +535,12 @@ vcg::Matrix44f rpy2mat(vcg::Point3f rpy){
 //    return 0;
 //}
 
+void readLidarTranslations(char * folder){
+    int i=0;
+    while(readBinTranslation((std::string(folder)+"/"+std::to_string(i)+".bin"))){
+        i++;
+    }
+}
 
 void bins2ply(char * folder){
     int i=0;
@@ -558,12 +581,12 @@ int create_mlp(char * folder ){
     of <<"<!DOCTYPE MeshLabDocument>\n <MeshLabProject> "<< std::endl;
 
     of <<"<MeshGroup>" << std::endl;
-    for(int i=0; i < converted_bins.size(); i+=bin_step)
+    for(int i=0; i < converted_bins.size(); i++)
     of <<"<MLMesh label=\""<< converted_bins[i] <<"\" filename=\""<< "LIDAR/"<<converted_bins[i]<<".ply" <<"\">\n<MLMatrix44> 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 </MLMatrix44> </MLMesh>" << std::endl;
     of <<"</MeshGroup>\n";
 
     of << "<RasterGroup>" << std::endl;
-    for(int i=0; i < image_names.size();i+=img_step){
+    for(int i=0; i < image_names.size();i++){
     p = positionFromBin(image_stamps[i]);
     p+=veloT.GetColumn3(3);// to imu
     p-=leftT.GetColumn3(3);// to camera
@@ -627,6 +650,8 @@ int main(int argc,char ** argv)
         bin_step = atoi(argv[4]);
         img_step = atoi(argv[5]);
     }
+
+    readLidarTranslations(argv[3]);
 
     // convert bin to plys
     bins2ply(argv[3]);

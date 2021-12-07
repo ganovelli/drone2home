@@ -565,6 +565,9 @@ int create_mlp(char * folder ){
     of << "<RasterGroup>" << std::endl;
     for(int i=0; i < image_names.size();i+=img_step){
     p = positionFromBin(image_stamps[i]);
+    p+=veloT.GetColumn3(3);// to imu
+    p-=leftT.GetColumn3(3);// to camera
+
     p = ros2vcg*p;
     (rotationFromImu(image_stamps[i])).ToMatrix(rot);
     rot = ros2vcg*vcg::Inverse(leftT)*rot;
@@ -605,7 +608,6 @@ int main(int argc,char ** argv)
     // leftT = rpy2mat(left_rpy);
 
     print_usage();
-                 exit(0);
 
 #ifdef CACERES_DATASET
     leftT = vcg::Matrix44d(T_cam_imu);

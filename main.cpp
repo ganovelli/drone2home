@@ -16,8 +16,8 @@
 #include <stdio.h>
 #include <fstream>
 
-#define CACERES_DATASET
-
+#define CACERES_DATASET_BLUE
+const bool tessellate = false;
 
 int bin_step = 10;
 int img_step = 10;
@@ -38,7 +38,7 @@ class MyMesh    : public vcg::tri::TriMesh< std::vector<MyVertex>, std::vector<M
 
 vcg::Point3f velodyne_rpy;
 vcg::Point3f left_rpy;
-vcg::Matrix44d veloT,leftT;
+vcg::Matrix44d lidar2imu,camera2imu;
 
 
 std::vector<std::pair<double,vcg::Shotf> > cameras;
@@ -106,26 +106,10 @@ void readImagesTime(std::string  folder){
 
 std::vector< std::pair<double, vcg::Quaterniond>> imu_rotations;
 std::vector< std::pair<double, vcg::Point3d>> lidar_translation;
+std::vector< std::pair<double, vcg::Quaterniond>> lidar_rotation;
 
-void readImuTS(std::string filename){
-    FILE*f = fopen(filename.c_str(),"rb");
-    if(f==0)
-        exit(0);
-    char _[100];
-    fgets(_,100,f);
-    while(!feof(f)){
-        int s,n;
-        float x,y,z,w;
-        fscanf(f,"%d, %d, %f, %f, %f, %f",&s,&n,&x,&y,&z,&w);
-        imu_rotations.push_back(std::pair<double, vcg::Quaterniond>());
-        imu_rotations.back().first=s+0.000000001*double(n);
-        imu_rotations.back().second.X() = x;
-        imu_rotations.back().second.Y() = y;
-        imu_rotations.back().second.Z() = z;
-        imu_rotations.back().second.W() = w;
-    }
-    fclose(f);
-}
+
+
 
 vcg::Quaterniond rotationFromImu(double ts){
     int i = 0;
@@ -133,9 +117,9 @@ vcg::Quaterniond rotationFromImu(double ts){
     while (imu_rotations[i].first < ts );
     double alpha = (ts - imu_rotations[i-1].first)/(imu_rotations[i].first - imu_rotations[i-1].first);
     alpha = std::min(1.0,std::max(0.0,alpha));
-    vcg::Quaterniond resQ;
     return vcg::Interpolate<double>(imu_rotations[i-1].second,imu_rotations[i].second,alpha);
 }
+
 
 vcg::Point3d positionFromBin(double ts){
     int i = 0;
@@ -145,6 +129,16 @@ vcg::Point3d positionFromBin(double ts){
     alpha = std::min(1.0,std::max(0.0,alpha));
     return lidar_translation[i-1].second* (1.0-alpha) + lidar_translation[i].second * alpha;
 }
+
+vcg::Quaterniond rotationFromBin(double ts){
+    int i = 0;
+    do{i++;}
+    while ( i<lidar_rotation.size() && lidar_rotation[i].first < ts );
+    double alpha = (ts - lidar_rotation[i-1].first )/(lidar_rotation[i].first  - lidar_rotation[i-1].first);
+    alpha = std::min(1.0,std::max(0.0,alpha));
+     return vcg::Interpolate<double>(lidar_rotation[i-1].second,lidar_rotation[i].second,alpha);
+}
+
 //std::vector< std::pair<double, vcg::Quaterniond>> imu_rotations;
 
 vcg::Shotf cameraFromSfM(double ts){
@@ -242,17 +236,19 @@ int readBinMeshNoSfm(std::string meshname, bool tessellate = true){
     double qr[4];
     int n_points;
 
+
     FILE *f = fopen(meshname.c_str(),"rb");
     if(f==0)
         return (0);
 
+
+
     fread(t,sizeof(int),2,f);
     double ts = t[0]+0.000000001*double(t[1]);
 
-  //  vcg::Quaterniond imuQ = rotationFromImu(ts);
+    vcg::Quaterniond rotImu = rotationFromImu(ts);
 
     fread(&tr[0],sizeof(double),3,f);
-   // lidar_translation.push_back(std::make_pair(ts,tr));
 
     fread(&qr[0],sizeof(double),4,f);
     *(vcg::Point3d*)&q[1] = *(vcg::Point3d*)&qr[0];
@@ -261,7 +257,8 @@ int readBinMeshNoSfm(std::string meshname, bool tessellate = true){
 
     // patch for writing error. No rotation is not a null quaternion
     bool use_q;
-    use_q = fabs((*(vcg::Point3d*)&q[1]).Norm()-1.0) < 0.01;
+    double no = fabs((*(vcg::Point3d*)&q[1]).Norm()-1.0);
+    use_q = no < 0.1;
 
     MyMesh mor;
     MyMesh::VertexIterator vi = vcg::tri::Allocator<MyMesh>::AddVertices(m,n_points);
@@ -316,38 +313,79 @@ int readBinMeshNoSfm(std::string meshname, bool tessellate = true){
         vcg::Point3d pd;
 
         pd.Import(vi->P()*scale);
+
         if(use_q)
             pd = q.Rotate(pd);
 
         pd+=tr;
 
-        // conversion ROS to VCG
-//        vcg::Matrix44f mat;
-//        pd = matmul(mat.SetRotateDeg(180,vcg::Point3f(1,0,0)),pd);
-
         vi->P().Import(pd);
         }
 
+    vcg::Matrix44f x90;
+    x90.SetRotateDeg(90,vcg::Point3f(1,0,0));
+    for(MyMesh::VertexIterator vi = m.vert.begin(); vi != m.vert.end();++vi)
+        (*vi).P() = x90*vi->P();
+
     // tessellate
-    vcg::tri::io::ExporterPLY<MyMesh>::Save(m,(meshname+".ply").c_str(),vcg::tri::io::Mask::IOM_ALL);
-
-
-//    MyMesh cube;
-//    vcg::tri::Hexahedron(cube);
-//    vcg::tri::UpdatePosition<MyMesh>::Scale(cube,0.001);
-//    vcg::Point3f trf;
-//    trf.Import(tr);
-//    vcg::tri::UpdatePosition<MyMesh>::Translate(cube,trf);
-//    vcg::tri::Append<MyMesh,MyMesh>::Mesh(allLerpCams,cube);
-//    vcg::tri::io::ExporterPLY<MyMesh>::Save(cube,(meshname +"_POS_.ply").c_str());
+    if(tessellate)
+        vcg::tri::io::ExporterPLY<MyMesh>::Save(m,(meshname+".T.ply").c_str(),vcg::tri::io::Mask::IOM_ALL);
+    else
+        vcg::tri::io::ExporterPLY<MyMesh>::Save(m,(meshname+".ply").c_str(),vcg::tri::io::Mask::IOM_ALL);
 
     fclose(f);
-
     return 1;
+}
+
+void readImuTS(std::string filename){
+    FILE*f = fopen(filename.c_str(),"rb");
+    if(f==0)
+        exit(0);
+    char _[100];
+    fgets(_,100,f);
+//    vcg::Matrix44d M;
+//    int i = 0;
+    while(!feof(f)){
+        int s,n;
+        float x,y,z,w;
+        fscanf(f,"%d, %d, %f, %f, %f, %f",&s,&n,&x,&y,&z,&w);
+        imu_rotations.push_back(std::pair<double, vcg::Quaterniond>());
+        imu_rotations.back().first=s+0.000000001*double(n);
+        imu_rotations.back().second.X() = x;//w;//
+        imu_rotations.back().second.Y() = y;//x;//
+        imu_rotations.back().second.Z() = z;//y;//
+        imu_rotations.back().second.W() = w;//z;//
+        imu_rotations.back().second.Normalize();
+
+//        vcg::Quaterniond q1(w,x,y,z);
+//        vcg::Quaterniond q2 = q1.Inverse()*imu_rotations.back().second;
+
+//        vcg::Matrix44d m ;
+//        q2.ToMatrix(m);
+
+//        vcg::Matrix44d pM;
+//        pM.SetZero();
+//        pM[0][2] = 1.0;
+//        pM[1][0] = -1.0;
+//        pM[2][1] = -1.0;
+//        pM[3][3] =  1.0;
+
+//        vcg::Quaterniond qM;
+//        qM.FromMatrix(pM);
+
+//        vcg::Quaterniond q3 = q1*qM;
+
+//        imu_rotations.back().second = q3;
+
+    }
+    fclose(f);
 }
 
 int readBinTranslation(std::string meshname){
     int t[2]; // timestamp seconds, nanoseconds
+    vcg::Quaterniond q;
+    double qr[4];
+
     vcg::Point3d tr;
     FILE *f = fopen(meshname.c_str(),"rb");
     if(f==0)
@@ -357,6 +395,13 @@ int readBinTranslation(std::string meshname){
     double ts = t[0]+0.000000001*double(t[1]);
     fread(&tr[0],sizeof(double),3,f);
     lidar_translation.push_back(std::make_pair(ts,tr));
+
+    fread(&qr[0],sizeof(double),4,f);
+    *(vcg::Point3d*)&q[1] = *(vcg::Point3d*)&qr[0];
+    q[0] = qr[3];
+    lidar_rotation.push_back(std::make_pair(ts,q));
+
+    fclose(f);
     return 1;
 }
 
@@ -445,14 +490,14 @@ int readBinMesh(std::string meshname){
         if(use_q)
             pd = q.Rotate(pd);
 
-        // apply velotransform to bring the point cloud to the velodyne frame
-       pd = matmul(veloT,pd);
+        // apply lidar2imuransform to bring the point cloud to the velodyne frame
+       pd = matmul(lidar2imu,pd);
 
         //pd = imuQ.Rotate(pd);
 
-        // apply inverse of leftT to bring the point cloud to the camera frame (mounted on the velodyne)
-       // pd = matmul(leftT.transpose(),pd);
-       pd = matmul(vcg::Inverse(leftT),pd);
+        // apply inverse of camera2imu to bring the point cloud to the camera frame (mounted on the velodyne)
+       // pd = matmul(camera2imu.transpose(),pd);
+       pd = matmul(vcg::Inverse(camera2imu),pd);
 
         // conversion ROS to VCG
         vcg::Matrix44f mat;
@@ -466,15 +511,17 @@ int readBinMesh(std::string meshname){
         }
 
     // tessellate
+
     vcg::tri::io::ExporterPLY<MyMesh>::Save(m,(meshname+".ply").c_str(),vcg::tri::io::Mask::IOM_ALL);
 
-    MyMesh cube;
-    vcg::tri::Hexahedron(cube);
-    vcg::tri::UpdatePosition<MyMesh>::Scale(cube,0.001);
-    vcg::Point3f trf;
-    trf.Import(tr);
-    vcg::tri::UpdatePosition<MyMesh>::Translate(cube,trf);
-    vcg::tri::Append<MyMesh,MyMesh>::Mesh(allLerpCams,cube);
+// saving  lidar positoin as small cubes
+//    MyMesh cube;
+//    vcg::tri::Hexahedron(cube);
+//    vcg::tri::UpdatePosition<MyMesh>::Scale(cube,0.001);
+//    vcg::Point3f trf;
+//    trf.Import(tr);
+//    vcg::tri::UpdatePosition<MyMesh>::Translate(cube,trf);
+//    vcg::tri::Append<MyMesh,MyMesh>::Mesh(allLerpCams,cube);
 //    vcg::tri::io::ExporterPLY<MyMesh>::Save(cube,(meshname +"_POS_.ply").c_str());
 
     fclose(f);
@@ -486,13 +533,7 @@ void align_bins(std::string folder){
     chdir(folder.c_str());
     int i=0;
     while(readBinMesh((folder+"/"+std::to_string(i)+".bin"))){i+=bin_step;}
-    //while(readBinMesh_no_T((folder+"/"+std::to_string(i)+".bin"))){i+=10;}
-
-//    readBinMesh((folder+"/9100.bin"));
-//    readBinMesh((folder+"/9200.bin"));
 }
-
-
 
 vcg::Matrix44f rpy2mat(vcg::Point3f rpy){
     vcg::Matrix44f res,rot;
@@ -512,12 +553,12 @@ vcg::Matrix44f rpy2mat(vcg::Point3f rpy){
 //    velodyne_rpy = vcg::Point3f(3.151592653589793,0.1323284641020683,0.);
 //    left_rpy = vcg::Point3f(-1.5708, 0, -1.5708);
 
-//    veloT = rpy2mat(velodyne_rpy);
-//    leftT = rpy2mat(left_rpy);
+//    lidar2imu = rpy2mat(velodyne_rpy);
+//    camera2imu = rpy2mat(left_rpy);
 
 //    // dataset november
-//    veloT = vcg::Matrix44f(T_vel_imu);
-//    leftT = vcg::Matrix44f(T_cam_imu);
+//    lidar2imu = vcg::Matrix44f(T_scan_imu);
+//    camera2imu = vcg::Matrix44f(T_cam_imu);
 
 
 //    scale = 1.0;
@@ -544,29 +585,30 @@ void readLidarTranslations(char * folder){
 
 void bins2ply(char * folder){
     int i=0;
-    while(readBinMeshNoSfm((std::string(folder)+"/"+std::to_string(i)+".bin"),false)){
+    while(readBinMeshNoSfm((std::string(folder)+"/"+std::to_string(i)+".bin"),tessellate)){
         i+=bin_step;
         converted_bins.push_back(std::to_string(i)+".bin");
     }
 }
 
 
-#ifdef CACERES_DATASET
+#ifdef CACERES_DATASET_BLUE
 double T_cam_imu[16]={
-  0.026367054322066402, -0.9996271606687501, 0.00709352519636397, 0.023448320704025388,
-  -0.030838652538258182, -0.006279228147363675, -0.9995046517167889, 0.02906892970104672,
+  -0.026367054322066402, -0.9996271606687501, 0.00709352519636397, 0.023448320704025388,
+  0.030838652538258182, -0.006279228147363675, -0.9995046517167889, 0.02906892970104672,
   0.999176538933938, -0.026572748205776653, -0.03066158992600701, -0.14528314791638972,
-  0.0, 0.0, 0.0, 1.0};
+  0.0, 0.0, 0.0, 1.0
+};
 
-double T_vel_imu[16]={
-        1.0,                        0,                       0,                 -0.06733,
-          0,    0.9999326692194534516, 0.011604181473039576131, 0.0010820899223609405006,
-          0, -0.011604181473039576131,  0.99993266921945334058,   0.15824372140471401615,
-          0,                        0,                       0,                      1.0,
+double T_scan_imu[16]={
+    0.9535461825, 0, -0.3012468719, -0.08483511244,
+    0,          -1.0, 0,                0.01,
+    -0.3012468719,0, -0.9535461825,  -0.1357497834,
+    0,    0,             0,            1.0,
     };
 #endif
 
-int create_mlp(char * folder ){
+int create_mlp(char * folder, bool tessellate ){
    std::string fname = std::string(folder)+"/../meshlab.mlp";
 
     vcg::Matrix44d rot;
@@ -575,6 +617,7 @@ int create_mlp(char * folder ){
     ros2vcg.SetRotateDeg(180,vcg::Point3d(1,0,0));
     d90y.SetRotateDeg(90,vcg::Point3d(0,-1,0));
 
+    std::string mname = (tessellate)?"_T.ply":".ply";
     vcg::Point3d p;
     std::ofstream of;
     of.open(fname);
@@ -582,21 +625,27 @@ int create_mlp(char * folder ){
 
     of <<"<MeshGroup>" << std::endl;
     for(int i=0; i < converted_bins.size(); i++)
-    of <<"<MLMesh label=\""<< converted_bins[i] <<"\" filename=\""<< "LIDAR/"<<converted_bins[i]<<".ply" <<"\">\n<MLMatrix44> 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 </MLMatrix44> </MLMesh>" << std::endl;
+    of <<"<MLMesh label=\""<< converted_bins[i] <<"\" filename=\""<< "LIDAR/"<<converted_bins[i]<<mname <<"\">\n<MLMatrix44> 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 </MLMatrix44> </MLMesh>" << std::endl;
     of <<"</MeshGroup>\n";
 
     of << "<RasterGroup>" << std::endl;
     for(int i=0; i < image_names.size();i++){
     p = positionFromBin(image_stamps[i]);
-    p+=veloT.GetColumn3(3);// to imu
-    p-=leftT.GetColumn3(3);// to camera
+    p+=lidar2imu.GetColumn3(3);// to imu
+    p-=camera2imu.GetColumn3(3);// to camera
 
     p = ros2vcg*p;
     (rotationFromImu(image_stamps[i])).ToMatrix(rot);
-    rot = ros2vcg*vcg::Inverse(leftT)*rot;
+    rot = ros2vcg*vcg::Inverse(camera2imu)*rot;
+
 
     rot.SetColumn(3,vcg::Point4d(0,0,0,1));
     rot = rot*d90y;
+
+    vcg::Matrix44d x90;
+    x90.SetRotateDeg(90,vcg::Point3d(1,0,0));
+    p = x90*vcg::Point3d(-p[0],p[1],p[2]);
+    rot = rot * vcg::Transpose(x90);
 
     of << "<MLRaster label=\""  << image_names[i].c_str() << "\">\n"
        << "<VCGCamera FocalMm=\""<< camera.focal << "\" RotationMatrix=\""<<
@@ -604,42 +653,48 @@ int create_mlp(char * folder ){
           rot[1][0] << " " << rot[1][1] <<" "<< rot[1][2] << " " << 0<< " "<<
           rot[2][0] << " " << rot[2][1] <<" "<< rot[2][2] << " " << 0<< " "<<
           rot[3][0] << " " << rot[3][1] <<" "<< rot[3][2] << " " << 1<<
-          "\" ViewportPx=\""<< camera.vp[0]*0.5 << " " << camera.vp[1]*0.5 <<"\" LensDistortion=\"0 0\"  BinaryData=\"0\"  CameraType=\"0\" TranslationVector=\""<<-p[0] << " " <<p[1] << " "<<p[2] <<" 1\" PixelSizeMm=\""<< 2.f   <<" " << 2.f <<"\""<<std::endl;
-    of<< "CenterPx=\""<< camera.c[0]*0.5<<" " << camera.c[1]*0.5<<"\"/>\n"<<
+          "\" ViewportPx=\""<< camera.vp[0] << " " << camera.vp[1] <<"\" LensDistortion=\"0 0\"  BinaryData=\"0\"  CameraType=\"0\" TranslationVector=\""<<p[0] << " " <<p[1] << " "<<p[2] <<" 1\" PixelSizeMm=\""<< 1.f   <<" " << 1.f <<"\""<<std::endl;
+    of<< "CenterPx=\""<< camera.c[0]<<" " << camera.c[1]<<"\"/>\n"<<
           "<Plane semantic=\"1\" fileName=\""<< "camera/"<<image_names[i].c_str() <<"\"/>\n</MLRaster>"<<std::endl;
     }
     of << " </RasterGroup></MeshLabProject>" << std::endl;
     of.close();
-
 }
 
 
 void print_usage(){
     std::cout << "dron2home PATH_TO_imu.txt PATH_TO_IMAGES_FOLDER PATH_TO_bin_FOLDER bin_step{default=10} img_step{default=10} "<< std::endl;
-    std::cout << "It takes the data collected from the drone and it creates a meshlab project\
- bin_step and img_step can be used to choose a subset of the point clouds and images\
- You can set them to 1 and the whole data will be processed but then you want be able to open\
- the mlp file with meshlad" << std::endl;
+    std::cout << "It takes the data collected from the drone and it creates a meshlab project\n\
+ bin_step and img_step can be used to choose a subset of the point clouds and images\n\
+ You can set them to 1 and the whole data will be processed but then you want be able to open\n\
+ the mlp file with meshlab" << std::endl;
 }
 int main(int argc,char ** argv)
 {
+
+//    readBinMeshNoSfm((std::string(argv[3])+"/"+std::to_string(1640)+".bin"),true);
+//    return 0;
+
     // dataset july
     // velodyne_rpy = vcg::Point3f(3.151592653589793,0.1323284641020683,0.);
     // left_rpy = vcg::Point3f(-1.5708, 0, -1.5708);
 
-    // veloT = rpy2mat(velodyne_rpy);
-    // leftT = rpy2mat(left_rpy);
+    // lidar2imu = rpy2mat(velodyne_rpy);
+    // camera2imu = rpy2mat(left_rpy);
+
 
     print_usage();
 
-#ifdef CACERES_DATASET
-    leftT = vcg::Matrix44d(T_cam_imu);
-    veloT = vcg::Matrix44d(T_vel_imu);
+#ifdef CACERES_DATASET_BLUE
+    camera2imu = vcg::Matrix44d(T_cam_imu);
+
+    lidar2imu = vcg::Matrix44d(T_scan_imu);
+
 
 
     camera.focal = 1400.71;
-    camera.c[0] = 1017.87000;
-    camera.c[1] = 553.07000;
+    camera.c[0]  = 1017.87000;
+    camera.c[1]  = 553.07000;
     camera.vp[0] = 1920;
     camera.vp[1] = 1080;
 
@@ -652,18 +707,30 @@ int main(int argc,char ** argv)
     }
 
     readLidarTranslations(argv[3]);
-
-    // convert bin to plys
-    bins2ply(argv[3]);
-
     // read imu values
     readImuTS(std::string(argv[1]));
 
     // read image time stamps
     readImagesTime(std::string(argv[2]));
 
+    // convert bin to plys
+    bins2ply(argv[3]);
+
+ //debug -----------
+//for(int i=0; i < image_names.size();i++){
+//    vcg::Quaterniond qb,qi,q_quo;
+//    qb = rotationFromBin(image_stamps[i]);
+//    qi = rotationFromImu(image_stamps[i]);
+//    qi.Invert();
+//    q_quo = qb*qi;
+//    printf("%d i : %f %f %f %f\n",i,q_quo[0],q_quo[1],q_quo[2],q_quo[3]);
+//}
+// -----------------
+
+
+
     // create MLP
-    create_mlp(argv[3]);
+    create_mlp(argv[3],tessellate);
 
     return 0;
 }

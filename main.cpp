@@ -16,6 +16,15 @@
 #include <stdio.h>
 #include <fstream>
 
+
+
+#include <AntTweakBar.h>
+#include <GL/glew.h>
+#include <GL/freeglut.h>
+#include <stdio.h>
+
+
+
 #define CACERES_DATASET_BLUE
 const bool tessellate = false;
 
@@ -710,9 +719,6 @@ int create_mlp(char * folder, bool tessellate ){
      imu2camera.SetColumn(3,vcg::Point4d(0,0,0,1));
      lidar2imu.SetColumn(3,vcg::Point4d(0,0,0,1));
 
-
-
-
      cameraFrame = lidarFrame*lidar2imu*imu2camera;
      cameraFrame = cameraFrame*RR.SetRotateDeg(180,vcg::Point3d(1,0,0));
 
@@ -775,6 +781,7 @@ void print_usage(){
  You can set them to 1 and the whole data will be processed but then you want be able to open\n\
  the mlp file with meshlab" << std::endl;
 }
+int mainGUI();
 int main(int argc,char ** argv)
 {
 
@@ -826,5 +833,98 @@ int main(int argc,char ** argv)
     create_mlp(argv[3],tessellate);
 
     stats_lidar(argv[3]);
-    return 0;
+    mainGUI();
+    glutInit(&argc, argv);
+}
+
+void Display(){}
+void Reshape(int,int){}
+void terminate(){}
+
+/// we choosed a subset of the avaible drawing modes
+enum DrawMode{SMOOTH=0,PERPOINTS,WIRE,FLATWIRE,HIDDEN,FLAT};
+
+/// the current drawmode
+DrawMode drawmode;
+
+void TW_CALL CopyCDStringToClient(char **destPtr, const char *src)
+{
+    size_t srcLen = (src!=NULL) ? strlen(src) : 0;
+    size_t destLen = (*destPtr!=NULL) ? strlen(*destPtr) : 0;
+
+    // Alloc or realloc dest memory block if needed
+    if( *destPtr==NULL )
+        *destPtr = (char *)malloc(srcLen+1);
+    else if( srcLen>destLen )
+        *destPtr = (char *)realloc(*destPtr, srcLen+1);
+
+    // Copy src
+    if( srcLen>0 )
+        strncpy(*destPtr, src, srcLen);
+    (*destPtr)[srcLen] = '\0'; // null-terminated string
+}
+
+int mainGUI(){
+
+    TwBar *bar; // Pointer to the tweak bar
+
+    // Initialize AntTweakBar
+    // (note that AntTweakBar could also be intialized after GLUT, no matter)
+    if( !TwInit(TW_OPENGL, NULL) )
+    {
+        // A fatal error occured
+        fprintf(stderr, "AntTweakBar initialization failed: %s\n", TwGetLastError());
+        return 1;
+    }
+
+
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
+    glutInitWindowSize(640, 480);
+    glutCreateWindow("AntTweakBar simple example using GLUT");
+    glutCreateMenu(NULL);
+
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_LIGHT0);
+    glEnable(GL_LIGHTING);
+
+    // Set GLUT callbacks
+    glutDisplayFunc(Display);
+    glutReshapeFunc(Reshape);
+//    atexit(Terminate);  // Called after glutMainLoop ends
+
+        // Set GLUT event callbacks
+    // - Directly redirect GLUT mouse button events to AntTweakBar
+//    glutMouseFunc((GLUTmousebuttonfun)mousePressEvent);
+    // - Directly redirect GLUT mouse motion events to AntTweakBar
+ //   glutMotionFunc((GLUTmousemotionfun)mouseMoveEvent);
+    // - Directly redirect GLUT mouse "passive" motion events to AntTweakBar (same as MouseMotion)
+    glutPassiveMotionFunc((GLUTmousemotionfun)TwEventMouseMotionGLUT);
+    // - Directly redirect GLUT key events to AntTweakBar
+    glutKeyboardFunc((GLUTkeyboardfun)TwEventKeyboardGLUT);
+    // - Directly redirect GLUT special key events to AntTweakBar
+    glutSpecialFunc((GLUTspecialfun)TwEventSpecialGLUT);
+
+ //   glutKeyboardFunc(keyPressEvent);
+ //   glutKeyboardUpFunc(keyReleaseEvent);
+
+
+  //  glutMouseWheelFunc(wheelEvent);
+    bar = TwNewBar("TweakBar");
+
+    TwCopyCDStringToClientFunc (CopyCDStringToClient);
+
+  //  TwAddVarRW(bar,"Input",TW_TYPE_CDSTRING,&filename," label='Filepath' group=SetMesh help=` Name of the file to load` ");
+  //  TwAddButton(bar,"Load from file",loadMesh,0,	" label='Load Mesh' group=SetMesh help=`load the mesh` ");
+  //  TwAddButton(bar,"Use tetrahedron",loadTetrahedron,0,	" label='Make Tetrahedron' group=SetMesh help=`use tetrahedron.` ");
+  //  TwAddButton(bar,"Use dodecahedron",loadDodecahedron,0,	" label='Make Dodecahedron' group=SetMesh help=`use dodecahedron.` ");
+
+
+    // ShapeEV associates Shape enum values with labels that will be displayed instead of enum values
+    TwEnumVal drawmodes[6] = { {SMOOTH, "Smooth"}, {PERPOINTS, "Per Points"}, {WIRE, "Wire"}, {FLATWIRE, "FlatWire"},{HIDDEN, "Hidden"},{FLAT, "Flat"}};
+    // Create a type for the enum shapeEV
+    TwType drawMode = TwDefineEnum("DrawMode", drawmodes, 6);
+    // add 'g_CurrentShape' to 'bar': this is a variable of type ShapeType. Its key shortcuts are [<] and [>].
+    TwAddVarRW(bar, "Draw Mode", drawMode, &drawmode, " keyIncr='<' keyDecr='>' help='Change draw mode.' ");
+
+    glutMainLoop();
 }

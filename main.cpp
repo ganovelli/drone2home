@@ -36,9 +36,9 @@
 
 
 #define SCALE 0.5
-//#define GLOBAL_ROTATE 
+#define CREATE_SINGLE_MESH 1
 #define ROTATION_AMOUNT 70
-#define CREATE_MLP 0
+#define CREATE_MLP 1
 
 //#include "shader_basic.h"
 //#include "fbo.h"
@@ -245,7 +245,7 @@ return 1;
 }
 
 
-
+MyMesh total;
 int readBinMeshNoSfm(std::string meshname, bool tessellate = true){
  
     char buffer[65536];
@@ -356,6 +356,10 @@ int readBinMeshNoSfm(std::string meshname, bool tessellate = true){
         vcg::tri::io::ExporterPLY<MyMesh>::Save(m,(meshname+".ply").c_str(),vcg::tri::io::Mask::IOM_ALL);
 
     fclose(f);
+
+    if(CREATE_SINGLE_MESH)
+       vcg::tri::Append<MyMesh, MyMesh>::Mesh(total, m);
+
     return 1;
 }
 
@@ -538,36 +542,6 @@ vcg::Matrix44f rpy2mat(vcg::Point3f rpy){
 
 
 
-//int main(int ,char ** argv)
-//{
-
-//    // dataset july
-//    velodyne_rpy = vcg::Point3f(3.151592653589793,0.1323284641020683,0.);
-//    left_rpy = vcg::Point3f(-1.5708, 0, -1.5708);
-
-//    lidar2imu = rpy2mat(velodyne_rpy);
-//    camera2imu = rpy2mat(left_rpy);
-
-//    // dataset november
-//    lidar2imu = vcg::Matrix44f(T_scan_imu);
-//    camera2imu = vcg::Matrix44f(T_cam_imu);
-
-
-//    scale = 1.0;
-
-
-//    // read imu values
-//    readImuTS(std::string(argv[1]));
-//    // read image time stamps
-//    readImagesTime(std::string(argv[2]));
-//    // read images aligned cameras
-//    import_from_bundle(argv[3]);
-
-//    align_bins(std::string(argv[4]));
-//    vcg::tri::io::ExporterPLY<MyMesh>::Save(::allLerpCams,"all_lerp_cams.ply",vcg::tri::io::Mask::IOM_ALL);
-//    return 0;
-//}
-
 void readLidarTranslations(char * folder){
     int i=0;
     while(readBinTranslation((std::string(folder)+"\\"+std::to_string(i)+".bin"))){
@@ -581,6 +555,8 @@ void bins2ply(char * folder){
         i+=bin_step;
         converted_bins.push_back(std::to_string(i)+".bin");
     }
+    if (CREATE_SINGLE_MESH)
+        vcg::tri::io::ExporterPLY<MyMesh>::Save(total, "total.ply");
 }
 
 
@@ -617,20 +593,7 @@ vcg::Matrix44d lidarAtTime(double t) {
     vcg::Matrix44d lidarFrame;
     qrotL.ToMatrix(lidarFrame);
 
-
-#ifdef  GLOBAL_ROTATE
-    vcg::Matrix44d R; R.SetRotateDeg(ROTATION_AMOUNT, vcg::Point3d(1, 0, 0));
- 
-    vcg::Point4d p4 = R * vcg::Point4d(p[0], p[1], p[2], 0.0);
-    p[0] = p4[0];
-    p[1] = p4[1];
-    p[2] = p4[2];
-   
-    lidarFrame = R * lidarFrame;
-#endif
-
     lidarFrame.SetColumn(3, p);
-
 
     return lidarFrame;
 }
@@ -639,53 +602,25 @@ vcg::Shotd  cameraAtTime(double t) {
     vcg::Matrix44d rot;
     vcg::Matrix44d imuFrame;
     vcg::Matrix44d cameraFrame;
-    vcg::Matrix44d imu2camera;
-
-
-    vcg::Point3d p = positionFromBin(t);
-    p -= lidar2imu.GetColumn3(3);// to imu
-    p -= camera2imu.GetColumn3(3);// to camera
-    int il;
-
-    vcg::Quaterniond qrotL = rotationFromBin(t, il);
+    vcg::Matrix44d imu2camera = vcg::Inverse(camera2imu);
     vcg::Matrix44d lidarFrame;
-    vcg::Matrix44d lidar2imuR = lidar2imu;
-    lidar2imuR.SetColumn(3, vcg::Point4d(0, 0, 0, 1));
-
-
-    qrotL.ToMatrix(lidarFrame);
-
-    imu2camera = vcg::Inverse(camera2imu);
-    imu2camera.SetColumn(3, vcg::Point4d(0, 0, 0, 1));
-
-    cameraFrame = lidarFrame * lidar2imuR.transpose() * imu2camera;
-
-
-    cameraFrame = cameraFrame * RR.SetRotateDeg(180, vcg::Point3d(1, 0, 0));
-  
+    vcg::Point3d p;
     vcg::Shotd shot;
-    shot.SetViewPoint(p);
 
-//patch
-//cameraFrame = cameraFrame * RR.SetRotateDeg(5, vcg::Point3d(0, 1, 0));
+    int il;
+    p = positionFromBin(t);
+    vcg::Quaterniond qrotL = rotationFromBin(t, il);
+    qrotL.ToMatrix(lidarFrame);
+    lidarFrame.SetColumn(3, p);
+    cameraFrame = lidarFrame * lidar2imu  * imu2camera;
+   
+    shot.SetViewPoint(cameraFrame.GetColumn3(3));
+    cameraFrame.SetColumn(3, vcg::Point4d(0, 0, 0, 1));
+    cameraFrame = cameraFrame * RR.SetRotateDeg(180, vcg::Point3d(1, 0, 0));
     shot.Extrinsics.SetRot(cameraFrame);
     shot.Intrinsics.SetFrustum(-camera.vp[0] / 2, camera.vp[0] / 2, -camera.vp[1] / 2, camera.vp[1] / 2, camera.focal, vcg::Point2i(camera.vp[0], camera.vp[1]));
 
-
-
-#ifdef  GLOBAL_ROTATE
-    vcg::Matrix44d R; R.SetRotateDeg(ROTATION_AMOUNT, vcg::Point3d(1, 0, 0));
-    vcg::Point4d p4  =  R * vcg::Point4d(p[0], p[1], p[2], 0.0);
-    p[0] = p4[0];
-    p[1] = p4[1];
-    p[2] = p4[2];
-
-    cameraFrame = R * cameraFrame;
-    shot.Extrinsics.SetRot(cameraFrame);
-    shot.SetViewPoint(p);
-#endif
     return shot;
-
 }
  
 vcg::Matrix44d  imuAtTime(double t) {

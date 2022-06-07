@@ -37,7 +37,8 @@
 
 #define SCALE 0.5
 //#define GLOBAL_ROTATE 
-#define ROTATION_AMOUNT 0
+#define ROTATION_AMOUNT 70
+#define CREATE_MLP 0
 
 //#include "shader_basic.h"
 //#include "fbo.h"
@@ -111,7 +112,6 @@ void readImagesTime(std::string  folder){
     int i=0;
     do{
         fi = fopen((folder+"\\left_"+std::to_string(i)+"_timestamp.txt").c_str(),"r");
-        i += img_step; // this is because we process only image iwth %img_step index
         if(fi!=0)
             {
              fgets(_,100,fi);
@@ -120,6 +120,7 @@ void readImagesTime(std::string  folder){
              image_stamps.push_back(s+0.000000001*double(ms));
              image_names.push_back("left_"+std::to_string(i)+".jpg");
             }
+        i += img_step; // this is because we process only image iwth %img_step index
     } while(fi!=0);
 }
 
@@ -246,6 +247,7 @@ return 1;
 
 
 int readBinMeshNoSfm(std::string meshname, bool tessellate = true){
+ 
     char buffer[65536];
     _getcwd(buffer, 1000);
     printf("dir: %s\n", buffer);
@@ -267,7 +269,7 @@ int readBinMeshNoSfm(std::string meshname, bool tessellate = true){
     fread(t,sizeof(int),2,f);
     double ts = t[0]+0.000000001*double(t[1]);
 
-    vcg::Quaterniond rotImu = rotationFromImu(ts);
+  //  vcg::Quaterniond rotImu = rotationFromImu(ts);
 
     fread(&tr[0],sizeof(double),3,f);
 
@@ -641,7 +643,7 @@ vcg::Shotd  cameraAtTime(double t) {
 
 
     vcg::Point3d p = positionFromBin(t);
-    p += lidar2imu.GetColumn3(3);// to imu
+    p -= lidar2imu.GetColumn3(3);// to imu
     p -= camera2imu.GetColumn3(3);// to camera
     int il;
 
@@ -656,7 +658,7 @@ vcg::Shotd  cameraAtTime(double t) {
     imu2camera = vcg::Inverse(camera2imu);
     imu2camera.SetColumn(3, vcg::Point4d(0, 0, 0, 1));
 
-    cameraFrame = lidarFrame * lidar2imuR * imu2camera;
+    cameraFrame = lidarFrame * lidar2imuR.transpose() * imu2camera;
 
 
     cameraFrame = cameraFrame * RR.SetRotateDeg(180, vcg::Point3d(1, 0, 0));
@@ -664,6 +666,8 @@ vcg::Shotd  cameraAtTime(double t) {
     vcg::Shotd shot;
     shot.SetViewPoint(p);
 
+//patch
+//cameraFrame = cameraFrame * RR.SetRotateDeg(5, vcg::Point3d(0, 1, 0));
     shot.Extrinsics.SetRot(cameraFrame);
     shot.Intrinsics.SetFrustum(-camera.vp[0] / 2, camera.vp[0] / 2, -camera.vp[1] / 2, camera.vp[1] / 2, camera.focal, vcg::Point2i(camera.vp[0], camera.vp[1]));
 
@@ -727,62 +731,24 @@ void create_mlp(char * folder, bool tessellate ){
     of <<"<!DOCTYPE MeshLabDocument>\n <MeshLabProject> "<< std::endl;
 
     of <<"<MeshGroup>" << std::endl;
-    for(int i=0; i < converted_bins.size(); i++)
+    for(int i=0; i < converted_bins.size()-1; i++)
     of <<"<MLMesh label=\""<< converted_bins[i] <<"\" filename=\""<< "LIDAR/"<<converted_bins[i]<<mname <<"\">\n<MLMatrix44> 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 </MLMatrix44> </MLMesh>" << std::endl;
     of <<"</MeshGroup>\n";
 
     of << "<RasterGroup>" << std::endl;
     for(int i=0; i <  image_names.size();i++){
-    p = positionFromBin(image_stamps[i]);
-    p+=lidar2imu.GetColumn3(3);// to imu
-    p-=camera2imu.GetColumn3(3);// to camera
 
-
-    //vcg::Quaterniond qrot = rotationFromImu(image_stamps[i]);
-    // qrot.ToMatrix(imuFrame);
-
-    // imu2camera = vcg::Inverse(camera2imu);
-    // imu2camera.SetColumn(3,vcg::Point4d(0,0,0,1));
-
-    // cameraFrame = imuFrame*imu2camera;
-
-     int il = -1;
-     vcg::Quaterniond qrotL = rotationFromBin(image_stamps[i],il);
-     vcg::Matrix44d lidarFrame;
-     qrotL.ToMatrix(lidarFrame);
-
-     printf("lidar n. %d\n",il);
-
-
-     imu2camera = vcg::Inverse(camera2imu);
-     imu2camera.SetColumn(3,vcg::Point4d(0,0,0,1));
-     lidar2imu.SetColumn(3,vcg::Point4d(0,0,0,1));
-
-     cameraFrame = lidarFrame*lidar2imu*imu2camera;
-     cameraFrame = cameraFrame*RR.SetRotateDeg(180,vcg::Point3d(1,0,0));
-
-//     vcg::Point3d s = skew(camera2imu);
-//     printf("camera2imu skew: %f %f %f\n",s[0],s[1],s[2]);
-
-     // PATCH for Meshlab which goes nuts for up vector close to Z
-     RR.SetRotateDeg(90,vcg::Point3d(1,0,0));
-     cameraFrame = RR*cameraFrame;
-     p = RR*p;
-
-
-    // meshlab stores the camera as the rotation matrix and .
-    // 3D to camera: rot*(point-p) (p camera center)
-    // the camera frame is encoded in the rows of rot
-
-   rot = cameraFrame;
-   rot.transposeInPlace();
+        vcg::Shotd shot = cameraAtTime(image_stamps[i]);
+        rot = shot.Extrinsics.Rot().transpose();
+        p = shot.GetViewPoint();
+   
     of << "<MLRaster label=\""  << image_names[i].c_str() << "\">\n"
        << "<VCGCamera FocalMm=\""<< camera.focal << "\" RotationMatrix=\""<<
           rot[0][0] << " " << rot[0][1] <<" "<< rot[0][2] << " " << 0<< " "<<
           rot[1][0] << " " << rot[1][1] <<" "<< rot[1][2] << " " << 0<< " "<<
           rot[2][0] << " " << rot[2][1] <<" "<< rot[2][2] << " " << 0<< " "<<
           rot[3][0] << " " << rot[3][1] <<" "<< rot[3][2] << " " << 1<<
-          "\" ViewportPx=\""<< camera.vp[0] << " " << camera.vp[1] <<"\" LensDistortion=\"0 0\"  BinaryData=\"0\"  CameraType=\"0\" TranslationVector=\""<<-p[0] << " " <<-p[1] << " "<<-p[2] <<" 1\" PixelSizeMm=\""<< 1.f   <<" " << 1.f <<"\""<<std::endl;
+          "\" ViewportPx=\""<< camera.vp[0] << " " << camera.vp[1] <<"\" LensDistortion=\"0 0\"  BinaryData=\"0\"  CameraType=\"0\" TranslationVector=\""<<  -p[0] << " " << -p[1] << " "<<-p[2] <<" 1\" PixelSizeMm=\""<< 1.f   <<" " << 1.f <<"\""<<std::endl;
     of<< "CenterPx=\""<< camera.c[0]<<" " << camera.c[1]<<"\"/>\n"<<
           "<Plane semantic=\"1\" fileName=\""<< "camera/"<<image_names[i].c_str() <<"\"/>\n</MLRaster>"<<std::endl;
     }
@@ -870,7 +836,7 @@ int main(int argc,char ** argv)
 
    
     //bins2ply(argv[3]);
-#define CREATE_MLP 0
+
     if (CREATE_MLP) {
         // convert bin to plys
         bins2ply(argv[3]);
@@ -1031,6 +997,7 @@ void wheelEvent(int wheel, int direction, int x, int y) {
 
 
 void* currentImage;
+double currentTime;
 int n_image=-1;
 vcg::Shotd  currentShot;
 vcg::Matrix44d currentLidar;
@@ -1074,6 +1041,13 @@ void draw_frame(vcg::Matrix44d frame) {
     glMultMatrixd(&R[0][0]);
     draw_axes(vcg::Point3f(0.5, 0.5, 0.5));
     glPopMatrix();
+}
+
+void print_matrix(const char* n, double * m) {
+    printf("%s\n %f %f %f %f \n %f %f %f %f \n %f %f %f %f \n %f %f %f %f\n", n, m[0], m[1], m[2], m[3],
+        m[4], m[5], m[6], m[7],
+        m[8], m[9], m[10], m[11],
+        m[12], m[13], m[14], m[15]);
 }
 
 
@@ -1159,34 +1133,15 @@ void Display() {
             far_plane = near_plane + 1.0;
         glDepthMask(GL_TRUE);
 
-
  
-        glMatrixMode(GL_PROJECTION);
-        glPushMatrix();
-        glLoadIdentity();
-        glFrustum(-1920/2*0.001,1920/2 * 0.001,-1080/2 * 0.001,1080/2 * 0.001, 1.4, far_plane);
+        vcg::Shotd _s = currentShot;
+        _s.Extrinsics.SetRot(_s.Extrinsics.Rot().transpose());
 
-        glMatrixMode(GL_MODELVIEW);
-        glPushMatrix();
-        glLoadIdentity();
-
-        vcg::Matrix44d camTrasf = currentShot.Extrinsics.Rot();
-        camTrasf.transposeInPlace();
-        vcg::Point3d t = currentShot.Extrinsics.Tra();
-        vcg::Point4d tt = -camTrasf * vcg::Point4d(t[0], t[1], t[2],-1.0);
-        camTrasf.SetColumn(3, tt);
-        camTrasf.transposeInPlace();
-        
-        glMultMatrixd(&camTrasf[0][0]);
+        GlShot<vcg::Shotd>::SetView(_s, 1.4, far_plane);
 
         glWrap.Draw<vcg::GLW::DMPoints, vcg::GLW::CMPerVert, vcg::GLW::TMNone>();
+        GlShot<vcg::Shotd>::UnsetView();
 
-        glPopMatrix();
-        glMatrixMode(GL_PROJECTION);
-        glPopMatrix();
-        glMatrixMode(GL_MODELVIEW);
-
- 
 
     }
 
@@ -1223,6 +1178,7 @@ void TW_CALL setImage(const void* value, void* clientData)
 
 
     n_image = *(const int*)value;  // for instance
+    currentTime = ::image_stamps[n_image];
     currentShot = cameraAtTime(::image_stamps[n_image]);
     currentLidar = lidarAtTime(::image_stamps[n_image]);
     currentImu = imuAtTime(::image_stamps[n_image]);
@@ -1309,7 +1265,8 @@ int mainGUI(int argc, char** argv){
     TwCopyCDStringToClientFunc (CopyCDStringToClient);
 
     TwAddVarRO(bar, "image", TW_TYPE_CSSTRING(100), currentImage, " ");
-     
+    TwAddVarRO(bar, "time", TW_TYPE_DOUBLE, &currentTime, "precision=3 ");
+
 
     
     TwAddVarCB(bar, "setimage", TW_TYPE_INT32, setImage, getImage, 0, (std::string("min='0' max='")+ std::to_string(image_names.size()-1)+ "' ").c_str());

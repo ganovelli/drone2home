@@ -37,11 +37,9 @@
 
 #define SCALE 0.5
 #define CREATE_SINGLE_MESH 1
-#define ROTATION_AMOUNT 70
-#define CREATE_MLP 1
+#define CREATE_MLP 0
 
-//#include "shader_basic.h"
-//#include "fbo.h"
+
 #include <wrap/gui/trackball.h>
 #include <wrap/gl/shot.h>
 #include <wrap/gl/camera.h>
@@ -79,10 +77,10 @@ std::vector<vcg::Shotf> shots;
 // vector of camera times ( i-th element in image_stamps is the time of i-th camera in shots)
 std::vector<double> image_stamps;
 
-// vector of image name
+// vector of image names
 std::vector<std::string> image_names;
 
-// vector of point clouds  name
+// vector of point clouds  names
 std::vector<std::string> converted_bins;
 
 struct CameraIntrinsics{
@@ -597,10 +595,10 @@ vcg::Matrix44d lidarAtTime(double t) {
 
     return lidarFrame;
 }
+
+
 vcg::Shotd  cameraAtTime(double t) {
     vcg::Matrix44d RR;
-    vcg::Matrix44d rot;
-    vcg::Matrix44d imuFrame;
     vcg::Matrix44d cameraFrame;
     vcg::Matrix44d imu2camera = vcg::Inverse(camera2imu);
     vcg::Matrix44d lidarFrame;
@@ -624,30 +622,22 @@ vcg::Shotd  cameraAtTime(double t) {
 }
  
 vcg::Matrix44d  imuAtTime(double t) {
-    vcg::Matrix44d RR;
-    vcg::Matrix44d rot;
     vcg::Matrix44d imuFrame;
+    vcg::Matrix44d RR;
     vcg::Matrix44d cameraFrame;
-    vcg::Matrix44d imu2camera;
-
-
-    vcg::Point3d p = positionFromBin(t);
-    p += lidar2imu.GetColumn3(3);// to imu
+    vcg::Matrix44d imu2camera = vcg::Inverse(camera2imu);
+    vcg::Matrix44d lidarFrame;
+    vcg::Point3d p;
+    vcg::Shotd shot;
 
     int il;
+    p = positionFromBin(t);
     vcg::Quaterniond qrotL = rotationFromBin(t, il);
-    vcg::Matrix44d lidarFrame;
     qrotL.ToMatrix(lidarFrame);
-    lidarFrame = lidarFrame * RR.SetRotateDeg(180, vcg::Point3d(1, 0, 0));
-
-    imu2camera = vcg::Inverse(camera2imu);
-    imu2camera.SetColumn(3, vcg::Point4d(0, 0, 0, 1));
-
-    imuFrame = lidar2imu * lidarFrame;
-    imuFrame.SetColumn(3,p);
+    lidarFrame.SetColumn(3, p);
+    imuFrame = lidarFrame * lidar2imu ;
 
     return imuFrame;
-
 }
 
 void create_mlp(char * folder, bool tessellate ){
@@ -828,24 +818,9 @@ GLuint vBuffer;
 
 void initForGUI() {
     vcg::tri::io::ImporterPLY<MyMesh>::Open(m, "all_geometry.ply");
-    // update Normals
-    // Initialize the opengl wrapper
     glWrap.m = &m;
     glWrap.Update();
-
-#ifdef  GLOBAL_ROTATE
-    vcg::Matrix44f R; R.SetRotateDeg(ROTATION_AMOUNT, vcg::Point3d(1, 0, 0));
-    vcg::tri::UpdatePosition<MyMesh>::Matrix(m, R);
-#endif
     vcg::tri::UpdateBounding<MyMesh>::Box(m);
-
-
-/*    glCreateBuffers(1, &vBuffer);
-
-    glBindBuffer(GL_ARRAY_BUFFER, vBuffer);
-    glBufferData(GL_ARRAY_BUFFER, m.vert.size() * 3 * sizeof(float), &(*m.vert.begin()), GL_STATIC_DRAW);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    */
 
     GLuint id_tex;
     glGenTextures(1, &id_tex);
@@ -856,9 +831,6 @@ void initForGUI() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1920,1080, 0, GL_BGR, GL_UNSIGNED_BYTE, NULL);
-
-
-
 }
 
 static vcg::Trackball::Button GLUT2VCG(int glut_button, int)
@@ -998,7 +970,6 @@ void Display() {
         //MONITOR VIEW
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();
-       // gluPerspective(40, width / (float)height, 1, 100);
         glFrustum(-1920 / 2 * 0.001, 1920 / 2 * 0.001, -1080 / 2 * 0.001, 1080 / 2 * 0.001, 1.4, far_plane);
         glMatrixMode(GL_MODELVIEW);
         glLoadIdentity();
@@ -1023,7 +994,7 @@ void Display() {
         if (currentShot.Intrinsics.FocalMm > 0.0) {
             draw_shot(currentShot);
             draw_frame(currentLidar);
-         //   draw_frame(currentImu);
+            draw_frame(currentImu);
         }
         glPopMatrix();
         track.DrawPostApply();
@@ -1115,6 +1086,8 @@ void TW_CALL setImage(const void* value, void* clientData)
     n_image = *(const int*)value;  // for instance
     currentTime = ::image_stamps[n_image];
     currentShot = cameraAtTime(::image_stamps[n_image]);
+ 
+
     currentLidar = lidarAtTime(::image_stamps[n_image]);
     currentImu = imuAtTime(::image_stamps[n_image]);
 
